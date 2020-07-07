@@ -8,7 +8,8 @@ from malis.malis_torch import malis_loss2d
 
 
 ##### Loading data 
-f=h5py.File('/.../train.h5','r')
+file_path_training_data = '...'  #please enter file path to training data here
+f=h5py.File(file_path_training_data,'r')  
 
 data_ch = f['train']
 seg_gt = f['groundtruth']

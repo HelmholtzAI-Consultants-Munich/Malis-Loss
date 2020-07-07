@@ -59,7 +59,351 @@ cdef void my_unravel_index(int flat_idx, int [::1] shape, int[4] return_idxes) n
         return_idxes[dim] = int(flat_idx / current_stride)
         flat_idx = flat_idx % current_stride
 
+def connected_components(uint64_t nVert,
+                         np.ndarray[uint64_t,ndim=1] node1,
+                         np.ndarray[uint64_t,ndim=1] node2,
+                         np.ndarray[int,ndim=1] edgeWeight,
+                         int sizeThreshold=1):
+    cdef uint64_t nEdge = node1.shape[0]
+    node1 = np.ascontiguousarray(node1)
+    node2 = np.ascontiguousarray(node2)
+    edgeWeight = np.ascontiguousarray(edgeWeight)
+    cdef np.ndarray[uint64_t,ndim=1] seg = np.zeros(nVert,dtype=np.uint64)
+    connected_components_cpp(nVert,
+                             nEdge, &node1[0], &node2[0], &edgeWeight[0],
+                             &seg[0]);
+    (seg,segSizes) = prune_and_renum(seg,sizeThreshold)
+    return (seg, segSizes)
 
+
+def marker_watershed(np.ndarray[uint64_t,ndim=1] marker,
+                     np.ndarray[uint64_t,ndim=1] node1,
+                     np.ndarray[uint64_t,ndim=1] node2,
+                     np.ndarray[float,ndim=1] edgeWeight,
+                     int sizeThreshold=1):
+    cdef uint64_t nVert = marker.shape[0]
+    cdef uint64_t nEdge = node1.shape[0]
+    marker = np.ascontiguousarray(marker)
+    node1 = np.ascontiguousarray(node1)
+    node2 = np.ascontiguousarray(node2)
+    edgeWeight = np.ascontiguousarray(edgeWeight)
+    cdef np.ndarray[uint64_t,ndim=1] seg = np.zeros(nVert,dtype=np.uint64)
+    marker_watershed_cpp(nVert, &marker[0],
+                         nEdge, &node1[0], &node2[0], &edgeWeight[0],
+                         &seg[0]);
+    (seg,segSizes) = prune_and_renum(seg,sizeThreshold)
+    return (seg, segSizes)
+
+
+def prune_and_renum(np.ndarray[uint64_t,ndim=1] seg,
+                    int sizeThreshold=1):
+    # renumber the components in descending order by size
+    segId,segSizes = np.unique(seg, return_counts=True)
+    descOrder = np.argsort(segSizes)[::-1]
+    renum = np.zeros(int(segId.max()+1),dtype=np.uint64)
+    segId = segId[descOrder]
+    segSizes = segSizes[descOrder]
+    renum[segId] = np.arange(1,len(segId)+1)
+
+    if sizeThreshold>0:
+        renum[segId[segSizes<=sizeThreshold]] = 0
+        segSizes = segSizes[segSizes>sizeThreshold]
+
+    seg = renum[seg]
+    return (seg, segSizes)
+
+
+def bmap_to_affgraph(bmap,nhood,return_min_idx=False):
+    """
+    Construct an affinity graph from a boundary map
+    
+    The spatial shape of the affinity graph is the same as of seg_gt.
+    This means that some edges are are undefined and therefore treated as disconnected.
+    If the offsets in nhood are positive, the edges with largest spatial index are undefined.    
+    
+    Parameters
+    ----------
+    
+    bmap: 3d np.ndarray, int
+        Volume of boundaries
+        0: object interior, 1: boundaries / ECS 
+    nhood: 2d np.ndarray, int
+        Neighbourhood pattern specifying the edges in the affinity graph
+        Shape: (#edges, ndim)
+        nhood[i] contains the displacement coordinates of edge i
+        The number and order of edges is arbitrary
+        
+    Returns
+    -------
+    
+    aff: 4d np.ndarray int32
+        Affinity graph of shape (#edges, x, y, z)
+        1: connected, 0: disconnected
+        
+    """
+    shape = bmap.shape
+    nEdge = nhood.shape[0]
+    aff = np.zeros((nEdge,)+shape,dtype=np.int32)
+    minidx = np.zeros((nEdge,)+shape,dtype=np.int32)
+
+    for e in range(nEdge):
+        aff[e, \
+            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = np.minimum( \
+                        bmap[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])], \
+                        bmap[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
+                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
+                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])] )
+        minidx[e, \
+            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = \
+                        bmap[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] > \
+                        bmap[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
+                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
+                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])]
+
+    return aff
+
+def seg_to_affgraph(seg,nhood):
+    """
+    Construct an affinity graph from a segmentation (IDs) 
+    
+    Segments with ID 0 are regarded as disconnected
+    The spatial shape of the affinity graph is the same as of seg_gt.
+    This means that some edges are are undefined and therefore treated as disconnected.
+    If the offsets in nhood are positive, the edges with largest spatial index are undefined.
+    
+    Input:    
+    seg_gt: 3d np.ndarray
+        Volume of segmentation IDs
+    nhood: 2d np.ndarray
+        Neighbourhood pattern specifying the edges in the affinity graph
+        Shape: (#edges, ndim)
+        nhood[i] contains the displacement coordinates of edge i
+        The number and order of edges is arbitrary
+        
+    Returns:
+    
+    aff: 4d np.ndarray
+        Affinity graph of shape (#edges, x, y, z)
+        1: connected, 0: disconnected        
+    """
+    shape = seg.shape
+    nEdge = nhood.shape[0]
+    aff = np.zeros((nEdge,)+shape,dtype=np.int32)
+
+    for e in range(nEdge):
+        aff[e, \
+            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = \
+                        (seg[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] == \
+                         seg[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
+                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
+                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])] ) \
+                        * ( seg[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] > 0 ) \
+                        * ( seg[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
+                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
+                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])] > 0 )
+
+    return aff
+
+def nodelist_like(shape,nhood):
+    """
+    Constructs the two node lists to represent edges of
+    an affinity graph for a given volume shape and neighbourhood pattern.
+    
+    Parameters
+    ----------
+    
+    shape: tuple/list
+     shape of corresponding volume (z, y, x)
+    nhood: 2d np.ndarray, int
+        Neighbourhood pattern specifying the edges in the affinity graph
+        Shape: (#edges, ndim)
+        nhood[i] contains the displacement coordinates of edge i
+        The number and order of edges is arbitrary
+        
+    Returns
+    -------
+    
+    node1: 4d np.ndarray, int32
+        Start nodes, reshaped as array
+    
+    node2: 4d np.ndarray, int32
+        End nodes, reshaped as array
+    """
+    nEdge = nhood.shape[0]
+    nodes = np.arange(np.prod(shape),dtype=np.uint64).reshape(shape)
+    node1 = np.tile(nodes,(nEdge,1,1,1))
+    node2 = np.full(node1.shape,-1,dtype=np.uint64)
+
+    for e in range(nEdge):
+        node2[e, \
+            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
+            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
+            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = \
+                nodes[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
+                     max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
+                     max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])]
+
+    return (node1, node2)
+
+
+def affgraph_to_edgelist(aff,nhood):
+    node1,node2 = nodelist_like(aff.shape[1:],nhood)
+    return (node1.ravel(),node2.ravel(),aff.ravel())
+
+def affgraph_to_seg(aff,nhood):
+    """
+    Input:
+    
+    affinity_gt: 4d np.ndarray
+        Affinity graph of shape (#edges, x, y, z)
+        1: connected, 0: disconnected 
+    nhood: 2d np.ndarray
+        Neighbourhood pattern specifying the edges in the affinity graph
+        Shape: (#edges, ndim)
+        nhood[i] contains the displacement coordinates of edge i
+        The number and order of edges is arbitrary
+        
+    Output:
+    
+    seg_gt: 3d np.ndarray, int 
+        Volume of segmentation IDs
+    
+    """
+    (node1,node2,edge) = affgraph_to_edgelist(aff,nhood)
+    (seg,segSizes) = connected_components(int(np.prod(aff.shape[1:])),node1,node2,edge)
+    seg = seg.reshape(aff.shape[1:])
+    return seg
+
+def mk_cont_table(seg1,seg2):
+    cont_table = scipy.sparse.coo_matrix((np.ones(seg1.shape),(seg1,seg2))).toarray()
+    return cont_table
+
+def compute_V_rand_N2(segTrue,segEst):
+    """
+    Computes Rand index of ``seg_pred`` w.r.t ``seg_true``.
+    The input arrays both contain label IDs and
+    may be of arbitrary, but equal, shape.
+    
+    Pixels which are have ID in the true segmentation are not counted!
+    
+    Parameters:
+    
+    seg_true: np.ndarray
+      True segmentation, IDs
+    seg_pred: np.ndarray
+      Predicted segmentation
+    
+    Returns
+    -------
+    
+    ri: ???
+    """
+    segTrue = segTrue.ravel()
+    segEst = segEst.ravel()
+    idx = segTrue != 0
+    segTrue = segTrue[idx]
+    segEst = segEst[idx]
+
+    cont_table = scipy.sparse.coo_matrix((np.ones(segTrue.shape),(segTrue,segEst))).toarray()
+    P = cont_table/cont_table.sum()
+    t = P.sum(axis=0)
+    s = P.sum(axis=1)
+
+    V_rand_split = (P**2).sum() / (t**2).sum()
+    V_rand_merge = (P**2).sum() / (s**2).sum()
+    V_rand = 2*(P**2).sum() / ((t**2).sum()+(s**2).sum())
+
+    return (V_rand,V_rand_split,V_rand_merge)
+
+def rand_index(segTrue,segEst):
+    segTrue = segTrue.ravel()
+    segEst = segEst.ravel()
+    idx = segTrue != 0
+    segTrue = segTrue[idx]
+    segEst = segEst[idx]
+
+    tp_plus_fp = comb(np.bincount(segTrue), 2).sum()
+    tp_plus_fn = comb(np.bincount(segEst), 2).sum()
+    A = np.c_[(segTrue, segEst)]
+    tp = sum(comb(np.bincount(A[A[:, 0] == i, 1]), 2).sum()
+             for i in set(segTrue))
+    fp = tp_plus_fp - tp
+    fn = tp_plus_fn - tp
+    tn = comb(len(A), 2) - tp - fp - fn
+    ri = (tp + tn) / (tp + fp + fn + tn)
+    prec = tp/(tp+fp)
+    rec = tp/(tp+fn)
+    fscore = 2*prec*rec/(prec+rec)
+    return (ri,fscore,prec,rec)
+
+def mknhood2d(radius=1):
+    # Makes nhood structures for some most used dense graphs.
+
+    ceilrad = np.ceil(radius)
+    x = np.arange(-ceilrad,ceilrad+1,1)
+    y = np.arange(-ceilrad,ceilrad+1,1)
+    [i,j] = np.meshgrid(y,x)
+
+    idxkeep = (i**2+j**2)<=radius**2
+    i=i[idxkeep].ravel(); j=j[idxkeep].ravel();
+    zeroIdx = np.ceil(len(i)/2).astype(np.int32);
+
+    nhood = np.vstack((i[:zeroIdx],j[:zeroIdx])).T.astype(np.int32)
+    return np.ascontiguousarray(np.flipud(nhood))
+
+def mknhood3d(radius=1):
+    """
+    Makes nhood structures for some most used dense graphs.
+    The neighborhood reference for the dense graph representation we use
+    nhood(1,:) is a 3 vector that describe the node that conn(:,:,:,1) connects to
+    so to use it: conn(23,12,42,3) is the edge between node [23 12 42] and [23 12 42]+nhood(3,:)
+    See? It's simple! nhood is just the offset vector that the edge corresponds to.
+    """
+
+    ceilrad = np.ceil(radius)
+    x = np.arange(-ceilrad,ceilrad+1,1)
+    y = np.arange(-ceilrad,ceilrad+1,1)
+    z = np.arange(-ceilrad,ceilrad+1,1)
+    [i,j,k] = np.meshgrid(z,y,x)
+
+    idxkeep = (i**2+j**2+k**2)<=radius**2
+    i=i[idxkeep].ravel(); j=j[idxkeep].ravel(); k=k[idxkeep].ravel();
+    zeroIdx = np.ceil(len(i)/2).astype(np.int32);
+
+    nhood = np.vstack((k[:zeroIdx],i[:zeroIdx],j[:zeroIdx])).T.astype(np.int32)
+    return np.ascontiguousarray(np.flipud(nhood))
+
+def mknhood3d_aniso(radiusxy=1,radiusxy_zminus1=1.8):
+    # Makes nhood structures for some most used dense graphs.
+
+    nhoodxyz = mknhood3d(radiusxy)
+    nhoodxy_zminus1 = mknhood2d(radiusxy_zminus1)
+    
+    nhood = np.zeros((nhoodxyz.shape[0]+2*nhoodxy_zminus1.shape[0],3),dtype=np.int32)
+    nhood[:3,:3] = nhoodxyz
+    nhood[3:,0] = -1
+    nhood[3:,1:] = np.vstack((nhoodxy_zminus1,-nhoodxy_zminus1))
+
+    return np.ascontiguousarray(nhood)
+
+
+        
+        
+        
 def scramble_sort(array, stochastic_malis_param):
     """
     This function scrambles a pre-sorted array. The
@@ -412,343 +756,3 @@ def compute_pairs_with_tree(labels, edge_weights, neighborhood, edge_tree, keep_
     return np.array(pos_pairs), np.array(neg_pairs)
 
 
-def connected_components(uint64_t nVert,
-                         np.ndarray[uint64_t,ndim=1] node1,
-                         np.ndarray[uint64_t,ndim=1] node2,
-                         np.ndarray[int,ndim=1] edgeWeight,
-                         int sizeThreshold=1):
-    cdef uint64_t nEdge = node1.shape[0]
-    node1 = np.ascontiguousarray(node1)
-    node2 = np.ascontiguousarray(node2)
-    edgeWeight = np.ascontiguousarray(edgeWeight)
-    cdef np.ndarray[uint64_t,ndim=1] seg = np.zeros(nVert,dtype=np.uint64)
-    connected_components_cpp(nVert,
-                             nEdge, &node1[0], &node2[0], &edgeWeight[0],
-                             &seg[0]);
-    (seg,segSizes) = prune_and_renum(seg,sizeThreshold)
-    return (seg, segSizes)
-
-
-def marker_watershed(np.ndarray[uint64_t,ndim=1] marker,
-                     np.ndarray[uint64_t,ndim=1] node1,
-                     np.ndarray[uint64_t,ndim=1] node2,
-                     np.ndarray[float,ndim=1] edgeWeight,
-                     int sizeThreshold=1):
-    cdef uint64_t nVert = marker.shape[0]
-    cdef uint64_t nEdge = node1.shape[0]
-    marker = np.ascontiguousarray(marker)
-    node1 = np.ascontiguousarray(node1)
-    node2 = np.ascontiguousarray(node2)
-    edgeWeight = np.ascontiguousarray(edgeWeight)
-    cdef np.ndarray[uint64_t,ndim=1] seg = np.zeros(nVert,dtype=np.uint64)
-    marker_watershed_cpp(nVert, &marker[0],
-                         nEdge, &node1[0], &node2[0], &edgeWeight[0],
-                         &seg[0]);
-    (seg,segSizes) = prune_and_renum(seg,sizeThreshold)
-    return (seg, segSizes)
-
-
-def prune_and_renum(np.ndarray[uint64_t,ndim=1] seg,
-                    int sizeThreshold=1):
-    # renumber the components in descending order by size
-    segId,segSizes = np.unique(seg, return_counts=True)
-    descOrder = np.argsort(segSizes)[::-1]
-    renum = np.zeros(int(segId.max()+1),dtype=np.uint64)
-    segId = segId[descOrder]
-    segSizes = segSizes[descOrder]
-    renum[segId] = np.arange(1,len(segId)+1)
-
-    if sizeThreshold>0:
-        renum[segId[segSizes<=sizeThreshold]] = 0
-        segSizes = segSizes[segSizes>sizeThreshold]
-
-    seg = renum[seg]
-    return (seg, segSizes)
-
-
-def bmap_to_affgraph(bmap,nhood,return_min_idx=False):
-    """
-    Construct an affinity graph from a boundary map
-    
-    The spatial shape of the affinity graph is the same as of seg_gt.
-    This means that some edges are are undefined and therefore treated as disconnected.
-    If the offsets in nhood are positive, the edges with largest spatial index are undefined.    
-    
-    Parameters
-    ----------
-    
-    bmap: 3d np.ndarray, int
-        Volume of boundaries
-        0: object interior, 1: boundaries / ECS 
-    nhood: 2d np.ndarray, int
-        Neighbourhood pattern specifying the edges in the affinity graph
-        Shape: (#edges, ndim)
-        nhood[i] contains the displacement coordinates of edge i
-        The number and order of edges is arbitrary
-        
-    Returns
-    -------
-    
-    aff: 4d np.ndarray int32
-        Affinity graph of shape (#edges, x, y, z)
-        1: connected, 0: disconnected
-        
-    """
-    shape = bmap.shape
-    nEdge = nhood.shape[0]
-    aff = np.zeros((nEdge,)+shape,dtype=np.int32)
-    minidx = np.zeros((nEdge,)+shape,dtype=np.int32)
-
-    for e in range(nEdge):
-        aff[e, \
-            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = np.minimum( \
-                        bmap[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])], \
-                        bmap[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
-                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
-                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])] )
-        minidx[e, \
-            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = \
-                        bmap[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] > \
-                        bmap[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
-                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
-                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])]
-
-    return aff
-
-def seg_to_affgraph(seg,nhood):
-    """
-    Construct an affinity graph from a segmentation (IDs) 
-    
-    Segments with ID 0 are regarded as disconnected
-    The spatial shape of the affinity graph is the same as of seg_gt.
-    This means that some edges are are undefined and therefore treated as disconnected.
-    If the offsets in nhood are positive, the edges with largest spatial index are undefined.
-    
-    Input:    
-    seg_gt: 3d np.ndarray
-        Volume of segmentation IDs
-    nhood: 2d np.ndarray
-        Neighbourhood pattern specifying the edges in the affinity graph
-        Shape: (#edges, ndim)
-        nhood[i] contains the displacement coordinates of edge i
-        The number and order of edges is arbitrary
-        
-    Returns:
-    
-    aff: 4d np.ndarray
-        Affinity graph of shape (#edges, x, y, z)
-        1: connected, 0: disconnected        
-    """
-    shape = seg.shape
-    nEdge = nhood.shape[0]
-    aff = np.zeros((nEdge,)+shape,dtype=np.int32)
-
-    for e in range(nEdge):
-        aff[e, \
-            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = \
-                        (seg[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] == \
-                         seg[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
-                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
-                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])] ) \
-                        * ( seg[max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-                            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-                            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] > 0 ) \
-                        * ( seg[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
-                            max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
-                            max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])] > 0 )
-
-    return aff
-
-def nodelist_like(shape,nhood):
-    """
-    Constructs the two node lists to represent edges of
-    an affinity graph for a given volume shape and neighbourhood pattern.
-    
-    Parameters
-    ----------
-    
-    shape: tuple/list
-     shape of corresponding volume (z, y, x)
-    nhood: 2d np.ndarray, int
-        Neighbourhood pattern specifying the edges in the affinity graph
-        Shape: (#edges, ndim)
-        nhood[i] contains the displacement coordinates of edge i
-        The number and order of edges is arbitrary
-        
-    Returns
-    -------
-    
-    node1: 4d np.ndarray, int32
-        Start nodes, reshaped as array
-    
-    node2: 4d np.ndarray, int32
-        End nodes, reshaped as array
-    """
-    nEdge = nhood.shape[0]
-    nodes = np.arange(np.prod(shape),dtype=np.uint64).reshape(shape)
-    node1 = np.tile(nodes,(nEdge,1,1,1))
-    node2 = np.full(node1.shape,-1,dtype=np.uint64)
-
-    for e in range(nEdge):
-        node2[e, \
-            max(0,-nhood[e,0]):min(shape[0],shape[0]-nhood[e,0]), \
-            max(0,-nhood[e,1]):min(shape[1],shape[1]-nhood[e,1]), \
-            max(0,-nhood[e,2]):min(shape[2],shape[2]-nhood[e,2])] = \
-                nodes[max(0,nhood[e,0]):min(shape[0],shape[0]+nhood[e,0]), \
-                     max(0,nhood[e,1]):min(shape[1],shape[1]+nhood[e,1]), \
-                     max(0,nhood[e,2]):min(shape[2],shape[2]+nhood[e,2])]
-
-    return (node1, node2)
-
-
-def affgraph_to_edgelist(aff,nhood):
-    node1,node2 = nodelist_like(aff.shape[1:],nhood)
-    return (node1.ravel(),node2.ravel(),aff.ravel())
-
-def affgraph_to_seg(aff,nhood):
-    """
-    Input:
-    
-    affinity_gt: 4d np.ndarray
-        Affinity graph of shape (#edges, x, y, z)
-        1: connected, 0: disconnected 
-    nhood: 2d np.ndarray
-        Neighbourhood pattern specifying the edges in the affinity graph
-        Shape: (#edges, ndim)
-        nhood[i] contains the displacement coordinates of edge i
-        The number and order of edges is arbitrary
-        
-    Output:
-    
-    seg_gt: 3d np.ndarray, int 
-        Volume of segmentation IDs
-    
-    """
-    (node1,node2,edge) = affgraph_to_edgelist(aff,nhood)
-    (seg,segSizes) = connected_components(int(np.prod(aff.shape[1:])),node1,node2,edge)
-    seg = seg.reshape(aff.shape[1:])
-    return seg
-
-def mk_cont_table(seg1,seg2):
-    cont_table = scipy.sparse.coo_matrix((np.ones(seg1.shape),(seg1,seg2))).toarray()
-    return cont_table
-
-def compute_V_rand_N2(segTrue,segEst):
-    """
-    Computes Rand index of ``seg_pred`` w.r.t ``seg_true``.
-    The input arrays both contain label IDs and
-    may be of arbitrary, but equal, shape.
-    
-    Pixels which are have ID in the true segmentation are not counted!
-    
-    Parameters:
-    
-    seg_true: np.ndarray
-      True segmentation, IDs
-    seg_pred: np.ndarray
-      Predicted segmentation
-    
-    Returns
-    -------
-    
-    ri: ???
-    """
-    segTrue = segTrue.ravel()
-    segEst = segEst.ravel()
-    idx = segTrue != 0
-    segTrue = segTrue[idx]
-    segEst = segEst[idx]
-
-    cont_table = scipy.sparse.coo_matrix((np.ones(segTrue.shape),(segTrue,segEst))).toarray()
-    P = cont_table/cont_table.sum()
-    t = P.sum(axis=0)
-    s = P.sum(axis=1)
-
-    V_rand_split = (P**2).sum() / (t**2).sum()
-    V_rand_merge = (P**2).sum() / (s**2).sum()
-    V_rand = 2*(P**2).sum() / ((t**2).sum()+(s**2).sum())
-
-    return (V_rand,V_rand_split,V_rand_merge)
-
-def rand_index(segTrue,segEst):
-    segTrue = segTrue.ravel()
-    segEst = segEst.ravel()
-    idx = segTrue != 0
-    segTrue = segTrue[idx]
-    segEst = segEst[idx]
-
-    tp_plus_fp = comb(np.bincount(segTrue), 2).sum()
-    tp_plus_fn = comb(np.bincount(segEst), 2).sum()
-    A = np.c_[(segTrue, segEst)]
-    tp = sum(comb(np.bincount(A[A[:, 0] == i, 1]), 2).sum()
-             for i in set(segTrue))
-    fp = tp_plus_fp - tp
-    fn = tp_plus_fn - tp
-    tn = comb(len(A), 2) - tp - fp - fn
-    ri = (tp + tn) / (tp + fp + fn + tn)
-    prec = tp/(tp+fp)
-    rec = tp/(tp+fn)
-    fscore = 2*prec*rec/(prec+rec)
-    return (ri,fscore,prec,rec)
-
-def mknhood2d(radius=1):
-    # Makes nhood structures for some most used dense graphs.
-
-    ceilrad = np.ceil(radius)
-    x = np.arange(-ceilrad,ceilrad+1,1)
-    y = np.arange(-ceilrad,ceilrad+1,1)
-    [i,j] = np.meshgrid(y,x)
-
-    idxkeep = (i**2+j**2)<=radius**2
-    i=i[idxkeep].ravel(); j=j[idxkeep].ravel();
-    zeroIdx = np.ceil(len(i)/2).astype(np.int32);
-
-    nhood = np.vstack((i[:zeroIdx],j[:zeroIdx])).T.astype(np.int32)
-    return np.ascontiguousarray(np.flipud(nhood))
-
-def mknhood3d(radius=1):
-    """
-    Makes nhood structures for some most used dense graphs.
-    The neighborhood reference for the dense graph representation we use
-    nhood(1,:) is a 3 vector that describe the node that conn(:,:,:,1) connects to
-    so to use it: conn(23,12,42,3) is the edge between node [23 12 42] and [23 12 42]+nhood(3,:)
-    See? It's simple! nhood is just the offset vector that the edge corresponds to.
-    """
-
-    ceilrad = np.ceil(radius)
-    x = np.arange(-ceilrad,ceilrad+1,1)
-    y = np.arange(-ceilrad,ceilrad+1,1)
-    z = np.arange(-ceilrad,ceilrad+1,1)
-    [i,j,k] = np.meshgrid(z,y,x)
-
-    idxkeep = (i**2+j**2+k**2)<=radius**2
-    i=i[idxkeep].ravel(); j=j[idxkeep].ravel(); k=k[idxkeep].ravel();
-    zeroIdx = np.ceil(len(i)/2).astype(np.int32);
-
-    nhood = np.vstack((k[:zeroIdx],i[:zeroIdx],j[:zeroIdx])).T.astype(np.int32)
-    return np.ascontiguousarray(np.flipud(nhood))
-
-def mknhood3d_aniso(radiusxy=1,radiusxy_zminus1=1.8):
-    # Makes nhood structures for some most used dense graphs.
-
-    nhoodxyz = mknhood3d(radiusxy)
-    nhoodxy_zminus1 = mknhood2d(radiusxy_zminus1)
-    
-    nhood = np.zeros((nhoodxyz.shape[0]+2*nhoodxy_zminus1.shape[0],3),dtype=np.int32)
-    nhood[:3,:3] = nhoodxyz
-    nhood[3:,0] = -1
-    nhood[3:,1:] = np.vstack((nhoodxy_zminus1,-nhoodxy_zminus1))
-
-    return np.ascontiguousarray(nhood)

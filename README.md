@@ -1,7 +1,7 @@
 # Malis Loss
 
 ## What is this?
-This program MALIS loss described in for 2D and 3D data:
+This repository implements MALIS loss for 2D and 3D data in Tensorflow/Keras and Pytorch:
 
 SC Turaga, KL Briggman, M Helmstaedter, W Denk, HS Seung (2009). *Maximin learning of image segmentation*. _Advances in Neural Information Processing Systems (NIPS) 2009_.
 
@@ -32,16 +32,20 @@ pip install .        (Installation as python package: run inside directory)
 ### Installation example in anaconda:
 ```
 conda create -n malis python=3.7
-conda install cython
-conda install numpy
-conda install gxx_linux-64
+conda activate malis
+conda install cython,numpy,gxx_linux-64
 conda install -c anaconda boost
 ./make.sh
 pip install .
 ```
 
 ## Example Usage:
-See keras_example and pytorch_example in example folder for further detailed training(with UNet) examples
+See keras_example and pytorch_example in example folder for further detailed training(with UNet) examples.
+Please install pytorch or tensorflow/Keras according to your needs, eg.:
+```
+conda install -c pytorch pytorch                or
+conda install -c anaconda tensorflow-gpu,keras
+```
 ### Using Keras/Tensorflow (channel last):
 
 #### 2D usage

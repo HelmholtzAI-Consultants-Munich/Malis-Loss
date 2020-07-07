@@ -8,10 +8,14 @@ def get_pairs(labels, edge_weights, neighborhood=None,
               keep_objs_per_edge=20, stochastic_malis_param=0, count_method=0,
               ignore_background=True):
     """
-    This function simply combines the build_tree and compute_pairs functions
-    pos_pairs: numpy array of shape (3,) + labels.shape
+    This function simply combines the build_tree and compute just the weights of the MALIS loss.
+    
+    Roughly speaking the malis weights quantify the impact of an edge in
+    the predicted affinity graph on the resulting segmentation.
+    
+    pos_pairs: numpy array of shape (C,) + labels.shape
                matching pairs
-    neg_pairs: numpy array of shape (3,) + labels.shape
+    neg_pairs: numpy array of shape (C,) + labels.shape
                nonmatching pairs
     """
     labels = labels.astype(np.uint32)

@@ -14,13 +14,14 @@ from malis.malis_keras import malis_loss2d
 
 
 ##### Loading data 
-f=h5py.File('/.../train.h5','r')
+file_path_training_data = '...'  #please enter file path to training data here
+f=h5py.File(file_path_training_data,'r')  
 
 data_ch = f['train']
 seg_gt = f['groundtruth']
 seg_gt = np.expand_dims(seg_gt,axis=-1)
 
-train_data = data_ch[:200]
+train_data = data_ch[:2000]
 train_gt = seg_gt[:2000]
 
 val_data = data_ch[2000:]
@@ -141,16 +142,6 @@ class UNetBuilder(object):
         print("shape output UNet:", np.shape(conv10))
         opt = Adam(learning_rate=0.0001, beta_1=0.95, beta_2=0.99)
         model2D.compile(optimizer=opt, loss = malis_loss2d)
-        
-        pretrained_weights = 'ce_model2-05.h5'
-        model2D.load_weights(pretrained_weights, by_name=True, skip_mismatch=True)
-        for layer, pre in zip(model2D.layers, pretrained_weights):
-            weights = layer.get_weights()
-            if weights:
-                if np.array_equal(weights[0], pre[0]):
-                    print('not loaded', layer.name)
-                else:
-                    print('loaded', layer.name)
 
         return model2D
     

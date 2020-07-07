@@ -13,4 +13,6 @@ setuptools.setup(name="malis",
                  version="1.0",
                  cmdclass={'build_ext': build_ext},
                  ext_modules=ext_modules,
+                 install_requires=['cython','numpy','h5py','scipy'],
+	         setup_requires=['cython','numpy','scipy'],
                  packages=["malis"])

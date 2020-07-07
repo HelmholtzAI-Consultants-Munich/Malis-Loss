@@ -1,5 +1,4 @@
 *.c
-*.cpp
 *~
 __pycache__
 *.html
@@ -7,3 +6,4 @@ __pycache__
 build/
 dist/
 *.egg-info
+.ipynb_checkpoints
