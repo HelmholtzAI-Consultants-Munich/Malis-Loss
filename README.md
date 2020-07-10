@@ -33,7 +33,7 @@ pip install .        (Installation as python package: run inside directory)
 ```
 conda create -n malis python=3.7
 conda activate malis
-conda install cython,numpy,gxx_linux-64
+conda install cython numpy gxx_linux-64
 conda install -c anaconda boost
 ./make.sh
 pip install .
