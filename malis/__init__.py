@@ -1,8 +1,5 @@
 import numpy as np
-#from . import malis_keras
-#from . import malis_torch
-from .wrappers import get_pairs
-from .pairs_cython import seg_to_affgraph,mknhood3d,affgraph_to_seg
+from .wrappers import malis_weights, mknhood3d, seg_to_affgraph,affgraph_to_seg
 
 
 ## using keras: from malis.malis_keras import malis_loss:   loss = malis_loss(seg_gt,aff_pred)

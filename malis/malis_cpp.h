@@ -1,11 +1,30 @@
-#ifndef MALIS_CPP_H
-#define MALIS_CPP_H
+#ifndef MALIS_H
+#define MALIS_H
 
-void connected_components_cpp(const uint64_t nVert,
-               const uint64_t nEdge, const uint64_t* node1, const uint64_t* node2, const int* edgeWeight,
-               uint64_t* seg);
+void connected_components_cpp(const int n_vert,
+                              const int n_edge,
+                              const int* node1,
+                              const int* node2,
+                              const float* edge_weight,
+                              const int size_thresh,
+                              int* seg);
 
-void marker_watershed_cpp(const uint64_t nVert, const uint64_t* marker,
-               const uint64_t nEdge, const uint64_t* node1, const uint64_t* node2, const float* edgeWeight,
-               uint64_t* seg);
+void malis_loss_weights_cpp(const int n_vert,
+                            const int* seg,
+                            const int n_edge,
+                            const int* node1,
+                            const int* node2,
+                            const float* edge_weight,
+                            const int pos,
+                            int* counts);
+
+void marker_watershed_cpp(const int n_vert,
+                          const int* marker,
+                          const int n_edge,
+                          const int* node1,
+                          const int* node2,
+                          const float* edge_weight,
+                          const int size_thresh,
+                          int* seg);
+
 #endif
