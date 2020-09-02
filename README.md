@@ -95,7 +95,7 @@ import numpy as np
 
 aff = .... # predicted affinity graph from trained model
 aff = np.where(aff<threshold,0,1)
-nhood = malis.mknhood3d(1)[:-1]  # or malis.mknhood3d(1) for 3d data prediction
+nhood = m.mknhood3d(1)[:-1]  # or malis.mknhood3d(1) for 3d data prediction
 seg = m.affgraph_to_seg(aff,nhood)
 ```
 More detailed example including automaticaly selecting threshold could be found in /postprocessing/postprocessing.ipynb.
@@ -104,6 +104,6 @@ More detailed example including automaticaly selecting threshold could be found 
 import malis as m
 nhood = m.mknhood3d(): Makes neighbourhood structures
 aff = m.seg_to_affgraph(seg_gt,nhood): Construct an affinity graph from a segmentation
-seg = m.affgraph_to_seg(affinity,nhood): Obtain a segementation graph from an affinity graph
+seg = m.affgraph_to_seg(affinity,nhood)[0]: Obtain a segementation graph from an affinity graph
 ```
 
