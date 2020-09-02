@@ -46,6 +46,12 @@ Please install pytorch or tensorflow/Keras according to your needs, eg.:
 conda install -c pytorch pytorch                or
 conda install -c anaconda tensorflow-gpu,keras
 ```
+**To use malis loss, the groundtruth should be processed so that every connected region in it has a different instance number.**
+One easy way to achieve it is using skimage:
+```
+from skimage.measure import label
+gt = label(gt)
+```
 ### Using Keras/Tensorflow (channel last):
 
 #### 2D usage
