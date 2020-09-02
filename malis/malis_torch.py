@@ -1,8 +1,7 @@
 import torch
 from torch.autograd import Function
-from .wrappers import get_pairs
 import numpy as np
-from .pairs_cython import mknhood3d
+from .wrappers import malis_weights,mknhood3d,seg_to_affgraph
 
 class torchloss(Function):
     '''
@@ -29,8 +28,9 @@ class torchloss(Function):
     def forward(ctx, aff_pred, seg_gt,nhood=None):
         aff_pred = aff_pred.detach().numpy() # detach so we can cast to NumPy
         seg_gt = seg_gt.detach().numpy()       
-        
-        weights_pos,weights_neg = get_pairs(seg_gt,aff_pred,nhood)
+            
+        gtaff = seg_to_affgraph(seg_gt, nhood) # get groundtruth affinity
+        weights_pos,weights_neg = malis_weights(aff_pred, gtaff, seg_gt, nhood) 
         weights_pos = weights_pos.astype(np.float32)
         weights_neg = weights_neg.astype(np.float32)
 
@@ -41,7 +41,7 @@ class torchloss(Function):
         #The backward pass computes the gradient wrt the input and the gradient wrt the filter.
         return None,None,None
 
-def pairs_to_loss_torch(pos_pairs, neg_pairs, output, margin=0.3, pos_loss_weight=0.3):
+def pairs_to_loss_torch(pos_pairs, neg_pairs, output, margin=0.3, pos_loss_weight=0.5):
     '''
     Computes MALIS loss weights from given positive and negtive weights.
     

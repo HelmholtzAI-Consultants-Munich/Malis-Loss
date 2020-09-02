@@ -1,11 +1,9 @@
 import keras.backend as K
 import tensorflow as tf
 import numpy as np
-from .wrappers import get_pairs
-from .pairs_cython import mknhood3d
+from .wrappers import malis_weights,mknhood3d,seg_to_affgraph
 
-
-def pairs_to_loss_keras(pos_pairs, neg_pairs, pred, margin=0.3, pos_loss_weight=0.3):
+def pairs_to_loss_keras(pos_pairs, neg_pairs, pred, margin=0.3, pos_loss_weight=0.5):
     """
     Computes MALIS loss weights from given positive and negtive weights.
     
@@ -24,23 +22,30 @@ def pairs_to_loss_keras(pos_pairs, neg_pairs, pred, margin=0.3, pos_loss_weight=
             final malis loss
         
     """
+    pos_t = tf.cast(pos_pairs,dtype=tf.float32)
+    pos_t = tf.math.divide_no_nan(pos_t,tf.reduce_sum(pos_t))
+
+    neg_t = tf.cast(neg_pairs,dtype=tf.float32)
+    neg_t = tf.math.divide_no_nan(neg_t,tf.reduce_sum(neg_t))
+    
     neg_loss_weight = 1 - pos_loss_weight
     zeros_helpervar = tf.zeros(shape=tf.shape(pred))
 
     pos_loss = tf.where(1 - pred - margin > 0,
                         (1 - pred - margin)**2,
                         zeros_helpervar)
-    pos_loss = pos_loss * pos_pairs
+    pos_loss = pos_loss * pos_t
     pos_loss = tf.reduce_sum(pos_loss) * pos_loss_weight
 
     neg_loss = tf.where(pred - margin > 0,
                         (pred - margin)**2,
                         zeros_helpervar)
-    neg_loss = neg_loss * neg_pairs
+    neg_loss = neg_loss * neg_t
     neg_loss = tf.reduce_sum(neg_loss) * neg_loss_weight
     malis_loss = (pos_loss + neg_loss) * 2  # because of the pos_loss_weight and neg_loss_weight
 
     return malis_loss
+
 
 def malis_loss2d(y_true,y_pred): 
     '''
@@ -52,7 +57,7 @@ def malis_loss2d(y_true,y_pred):
     Input:
        y_true: Tensor (batch_size, H, W, C = 1)
           segmentation groundtruth
-       y_pred: Tensor (batch_size, H, W, C = 2)
+       y_pred: Tensor (batch_size, H, W, C = 3)
            affinity predictions from network
     Returns:
        loss: Tensor(scale)
@@ -70,18 +75,21 @@ def malis_loss2d(y_true,y_pred):
     x = K.int_shape(y_pred)[1]  # H
     y = K.int_shape(y_pred)[2]  # W
 
-    seg_true = K.reshape(y_true,(x,y,-1))             # (H,W,C'=C*batch_size)
-    y_pred = K.permute_dimensions(y_pred,(3,1,2,0))   # (C=2,H,W,batch_size)
-    #########
-    
-    nhood = mknhood3d(1)[:-1]  # define neighborhood structure, check mknhood3d in pairs_cython.pyx for further information
-                               # calculating connectivity among x and y axis here
-    pos_pairs, neg_pairs = tf.numpy_function(func = get_pairs,inp=[seg_true, y_pred, nhood],
-                                             Tout=[tf.uint64,tf.uint64])  # get positive and negtive malis weights
-    pos_pairs = tf.cast(pos_pairs,tf.float32)
-    neg_pairs = tf.cast(neg_pairs,tf.float32) 
+    seg_true = K.reshape(y_true,(x,y,-1))              # (H,W,D)
+    y_pred = K.permute_dimensions(y_pred,(3,1,2,0))   # (C=3,H,W,D)
 
-    loss = pairs_to_loss_keras(pos_pairs, neg_pairs, y_pred)  # computes final malis loss
+    #########
+    nhood = mknhood3d(1)[:-1]
+    nhood = tf.cast(nhood,tf.int32)
+    
+    gtaff = tf.numpy_function(func = seg_to_affgraph,inp=[seg_true, nhood],
+                                             Tout=tf.int16) # get groundtruth affinity
+    
+    weights_pos,weights_neg = tf.py_function(malis_weights,
+                         [y_pred, gtaff, seg_true, nhood],
+                         [tf.int32,tf.int32])
+
+    loss = pairs_to_loss_keras(weights_pos, weights_neg, y_pred)
     
     return loss
 
@@ -96,7 +104,7 @@ def malis_loss3d(y_true,y_pred):
     Input:
        y_true: Tensor (batch_size=1, H, W, D, C=1)
           segmentation groundtruth
-       y_pred: Tensor (batch_size=1, H, W, D, C=3)
+       y_pred: Tensor (batch_size=1, H, W, D, C=4)
            affinity predictions from network
     Returns:
        loss: Tensor(scale)
@@ -116,18 +124,18 @@ def malis_loss3d(y_true,y_pred):
     z = K.int_shape(y_pred)[3]  # D
 
     seg_true = K.reshape(y_true,(x,y,z))              # (H,W,D)
-    y_pred = K.reshape(y_pred,(x,y,z,-1))             # (H,W,D,C=3)
-    y_pred = K.permute_dimensions(y_pred,(3,0,1,2))   # (C=3,H,W,D)
-    
-    #########
-    
-    nhood = mknhood3d(1)   # define neighborhood structure, check mknhood3d in pairs_cython.pyx for further information
-                           # calculating connectivity among x, y and z axis here               
-    pos_pairs, neg_pairs = tf.numpy_function(func = get_pairs,inp=[seg_true, y_pred, nhood],
-                                             Tout=[tf.uint64,tf.uint64]) # get positive and negtive malis weights
-    pos_pairs = tf.cast(pos_pairs,tf.float32)
-    neg_pairs = tf.cast(neg_pairs,tf.float32) 
+    y_pred = K.permute_dimensions(y_pred[0],(3,0,1,2))   # (C=3,H,W,D)
 
-    loss = pairs_to_loss_keras(pos_pairs, neg_pairs, y_pred) # computes final malis loss
-    
+    #########
+    nhood = mknhood3d(1)
+    nhood = tf.cast(nhood,tf.int32)
+    gtaff = tf.numpy_function(func = seg_to_affgraph,inp=[seg_true, nhood],
+                                             Tout=tf.int16) # get positive and negtive malis weights
+
+    weights_pos,weights_neg = tf.py_function(malis_weights,
+                         [y_pred, gtaff, seg_true, nhood],
+                         [tf.int32,tf.int32])
+
+    loss = pairs_to_loss_keras(weights_pos, weights_neg, y_pred)
+
     return loss
