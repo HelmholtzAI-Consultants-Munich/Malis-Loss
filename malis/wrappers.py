@@ -451,6 +451,13 @@ class MalisWeights(object):
         pos_counts = pos_counts.reshape(sh)
         neg_counts = neg_counts.reshape(sh)
         
+        pos_counts = pos_counts.astype(np.float32)
+        neg_counts = neg_counts.astype(np.float32)
+        
+        for i in range(nhood.shape[0]):
+            pos_counts[i,:,:,0] = pos_counts[i,:,:,0]/np.sum(pos_counts[i])
+            neg_counts[i,:,:,0] = neg_counts[i,:,:,0]/np.sum(neg_counts[i])
+            
         return pos_counts, neg_counts
 
 malis_weights = MalisWeights()
